@@ -46,6 +46,9 @@ h2 small{font:400 13px Inter,sans-serif;color:var(--mute)}
 .tot{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:-2px 0 10px}
 .tot b{font:700 26px/1.1 "Inter Tight",sans-serif;font-variant-numeric:tabular-nums}
 .tot span{font-size:13px;color:var(--mute)}
+.warn{color:var(--amber);font-weight:600}
+.qty em.long,.qty em.short{font-weight:600}
+.qty em.long{color:var(--green)}.qty em.short{color:var(--red)}
 .chip b{font-weight:600}
 .pos .name{font-weight:600}
 .pos .sub{font-size:13px;color:var(--mute)}
@@ -112,10 +115,11 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
 
     <h2>Positions <small id="posAge"></small></h2>
     <div id="pos"><div class="empty">No position data yet</div></div>
-    <p class="legend" id="plNote" hidden>P/L is an estimate: T3 doesn't publish fill prices, so each trade is priced at the market price when it happened (options from approximate quotes). Positions held from yesterday start from yesterday's close.</p>
+    <p class="legend warn" id="plWhy" hidden></p>
+    <p class="legend" id="plNote" hidden>P/L counts only what he has sold today (realized). It's an estimate: T3 doesn't publish fill prices, so each trade is priced at the market price when it happened (options from approximate quotes). For positions bought before you installed the monitor, the cost is yesterday's close.</p>
     <p class="legend"><b>Long</b> = he bought it and owns it. <b>Short</b> = he sold it without owning it first (for example, sold calls to collect the premium), which profits if the price falls or stays below the strike. One option contract controls 100 shares.</p>
 
-    <h2>Today's trades <small id="dayInfo"></small></h2>
+    <h2>Recent trades <small id="dayInfo"></small></h2>
     <label class="filter"><span class="vh">Filter by symbol</span><select id="symFilter"><option value="">All symbols</option></select></label>
     <ul class="tape" id="day"><li class="empty">Waiting for the first update from the monitor</li></ul>
 
@@ -138,7 +142,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
       <button type="button" class="ghost close" id="sheetClose" aria-label="Close">Close</button>
     </div>
     <div class="stats" id="sheetStats"></div>
-    <h3 class="h3">Trades today <small>oldest first</small></h3>
+    <h3 class="h3">Trades today <small>newest first</small></h3>
     <ul class="tape" id="sheetList"></ul>
   </div>
 </div>
@@ -219,13 +223,14 @@ function snapshotOf(e) {
     const cs = e.cs || [];
     const positions = e.pos.map(([ci, n, avg, mark, r, u]) => ({ c: cs[ci], n, avg, mark, r, u })).filter(p => p.c);
     const fills = (e.day || '').split(';').map(x => x.split('|')).filter(a => a.length >= 5)
-      .map(([hm, ci, s, q, n, px]) => ({ hm, c: cs[+ci], s, q: +q, n: +n, px: px ? +px : null })).filter(f => f.c).sort(byTime);
-    return { positions, fills, tot: e.tot || null, at: e.at, hasPnl: !!e.tot, cut: e.dayCut || 0 };
+      .map(([hm, ci, s, q, n, px, rp]) => ({ hm, c: cs[+ci], s, q: +q, n: +n, px: px ? +px : null, rp: rp !== undefined && rp !== '' ? +rp : null }))
+      .filter(f => f.c).sort(byTime);
+    return { positions, fills, tot: e.tot || null, at: e.at, hasPnl: !!e.tot, cut: e.dayCut || 0, pl: e.pl || (e.tot ? 'ok' : 'off'), v: 3 };
   }
   if (Array.isArray(e.positions)) {
     const fills = typeof e.today === 'string' ? e.today.split(';').map(x => x.split('|')).filter(a => a.length === 5)
       .map(([hm, c, s, q, n]) => ({ hm, c, s, q: +q, n: +n, px: null })).sort(byTime) : [];
-    return { positions: e.positions.map(p => ({ c: p.c, n: p.n })), fills, tot: null, at: e.at, hasPnl: false, cut: 0 };
+    return { positions: e.positions.map(p => ({ c: p.c, n: p.n })), fills, tot: null, at: e.at, hasPnl: false, cut: 0, pl: 'old', v: 2 };
   }
   return null;
 }
@@ -234,15 +239,17 @@ function fillRow(f, showName) {
   const k = contract(f.c);
   const what = f.s === 'O' ? 'Carried from previous day' : `${VERB[f.s]} ${units(f.q, k.opt)}${f.px ? ' @ ~' + pxFmt(f.px) : ''}`;
   const now = f.n === 0 ? 'now flat' : `now ${f.n < 0 ? 'short ' : ''}${units(f.n, k.opt)}`;
+  const rp = f.rp != null && f.rp !== 0 || (f.rp === 0 && (f.s === 'S' || f.s === 'C'))
+    ? `<em class="${plCls(f.rp)}">${esc(usd(f.rp, true))} realized</em>` : '';
   return `<li><time>${esc(hm12(f.hm))}</time><span class="pill ${esc(SIDE[f.s] || 'sys')}">${esc(SIDE[f.s] || f.s)}</span>` +
     (showName ? `<span class="c">${esc(k.name)}<em>${esc(k.opt ? k.sub.replace('Option · ', '') : 'Stock')}</em></span>` : '<span class="c"></span>') +
-    `<span class="qty">${esc(what)}<em>${esc(now)}</em></span></li>`;
+    `<span class="qty">${esc(what)}<em>${esc(now)}</em>${rp}</span></li>`;
 }
 
 function card(p, traded) {
-  const k = contract(p.c), long = p.n > 0, tot = (p.r || 0) + (p.u || 0);
-  const pl = snap.hasPnl && p.r != null
-    ? `<span class="pl ${plCls(tot)}">P/L today ≈ ${esc(usd(tot, true))}</span><span class="sub">avg ${esc(pxFmt(p.avg))} · now ${esc(pxFmt(p.mark))}</span>` : '';
+  const k = contract(p.c), long = p.n > 0;
+  const sold = snap.fills.some(f => f.c === p.c && f.rp != null);
+  const pl = snap.hasPnl && sold ? `<span class="pl ${plCls(p.r)}">Realized today ≈ ${esc(usd(p.r, true))}</span>` : '';
   return `<button type="button" class="card" data-c="${esc(p.c)}" aria-label="${esc(k.name)}: show today's trades">` +
     `<span class="name">${esc(k.name)}</span><span class="sub">${esc(k.sub)}</span>` +
     `<span class="n ${long ? 'long' : 'short'}">${long ? 'Long' : 'Short'} ${esc(units(p.n, k.opt))}` +
@@ -260,13 +267,13 @@ function section(kind, label) {
   const closed = [...closedSet].map(c => snap.positions.find(p => p.c === c) || { c, n: 0 });
   let head = '';
   if (snap.hasPnl && snap.tot) {
-    const [r, u] = snap.tot[kind] || [0, 0];
-    head = `<div class="tot"><b class="${plCls(r + u)}">${esc(usd(r + u, true))}</b><span>est. P/L today · closed ${esc(usd(r, true))} · open ${esc(usd(u, true))}</span></div>`;
+    const [r] = snap.tot[kind] || [0];
+    head = `<div class="tot"><b class="${plCls(r)}">${esc(usd(r, true))}</b><span>realized P/L today (sold) · est.</span></div>`;
   }
   return `<section class="grp"><h3 class="h3">${label} <small>${open.length} open</small></h3>${head}` +
     `<div class="pos">${open.length ? open.map(p => card(p, traded(p.c))).join('') : '<div class="empty">None open</div>'}</div>` +
-    (closed.length ? `<div class="chips">${closed.map(p => { const t = (p.r || 0) + (p.u || 0);
-      return `<button type="button" class="chip" data-c="${esc(p.c)}">${esc(contract(p.c).name)} · closed${snap.hasPnl && p.r != null ? ` <b class="${plCls(t)}">${esc(usd(t, true))}</b>` : ''} ›</button>`; }).join('')}</div>` : '') +
+    (closed.length ? `<div class="chips">${closed.map(p =>
+      `<button type="button" class="chip" data-c="${esc(p.c)}">${esc(contract(p.c).name)} · closed${snap.hasPnl && p.r != null ? ` <b class="${plCls(p.r)}">${esc(usd(p.r, true))}</b>` : ''} ›</button>`).join('')}</div>` : '') +
     `</section>`;
 }
 
@@ -287,16 +294,10 @@ function drawSheet() {
     ['Sold', units(sum(['S', 'X']), k.opt)],
   ];
   if (trades.length) stats.push(['First / last', `${hm12(trades[0].hm)} – ${hm12(trades[trades.length - 1].hm)}`]);
-  if (snap.hasPnl && pos.r != null) {
-    const t = (pos.r || 0) + (pos.u || 0);
-    stats.unshift(['Est. P/L today', `<span class="${plCls(t)}">${esc(usd(t, true))}</span>`, true]);
-    stats.push(['Closed P/L', `<span class="${plCls(pos.r)}">${esc(usd(pos.r, true))}</span>`, true],
-               ['Open P/L', `<span class="${plCls(pos.u)}">${esc(usd(pos.u, true))}</span>`, true]);
-    if (nowN) stats.push(['Avg cost', pxFmt(pos.avg)]);
-    stats.push(['Last price', pxFmt(pos.mark)]);
-  }
+  if (snap.hasPnl && pos.r != null)
+    stats.unshift(['Realized P/L today', trades.some(f => f.rp != null) ? `<span class="${plCls(pos.r)}">${esc(usd(pos.r, true))}</span>` : 'Nothing sold yet', true]);
   $('sheetStats').innerHTML = stats.map(([a, b, html]) => `<div><span>${esc(a)}</span><b>${html ? b : esc(b)}</b></div>`).join('');
-  $('sheetList').innerHTML = list.length ? list.map(f => fillRow(f, false)).join('') : '<li class="empty">No trades in this position today</li>';
+  $('sheetList').innerHTML = list.length ? list.slice().reverse().map(f => fillRow(f, false)).join('') : '<li class="empty">No trades in this position today</li>';
 }
 function openSheet(c) {
   sheetC = c; drawSheet();
@@ -327,16 +328,25 @@ function render() {
   $('posAge').textContent = src ? 'as of ' + tET(src.at) + ' ET' : '';
   $('pos').innerHTML = src ? section('s', 'Stocks') + section('o', 'Options') : '<div class="empty">No position data yet</div>';
   $('plNote').hidden = !snap.hasPnl;
+  const why = !src ? '' : snap.hasPnl ? '' : snap.pl === 'old' ? 'P/L needs extension v3: unzip it and click Reload in chrome://extensions.'
+    : snap.pl === 'err' ? 'P/L error in the extension: open its Settings and click "Test Alpaca connection".'
+    : 'P/L is off: add your Alpaca keys in the extension Settings and click Save.';
+  $('plWhy').textContent = why; $('plWhy').hidden = !why;
 
-  const syms = [...new Set(fills.map(f => f.c.split(' ')[0]))].sort();
+  const syms = [...new Set(fills.filter(f => f.s !== 'O').map(f => f.c.split(' ')[0]))].sort();
   const sel = $('symFilter'), cur = sel.value;
   sel.innerHTML = '<option value="">All symbols</option>' + syms.map(x => `<option${x === cur ? ' selected' : ''}>${esc(x)}</option>`).join('');
-  const shown = fills.filter(f => !sel.value || f.c.split(' ')[0] === sel.value).slice().reverse();
+  // Only the last 3 hours (tap a position for its full day)
+  const etMin = (d) => { const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(d).map(x => [x.type, x.value])); return (+p.hour % 24) * 60 + +p.minute; };
+  const sameDay = src && new Date(src.at).toLocaleDateString('en-US', { timeZone: 'America/New_York' }) === new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+  const ref = sameDay ? etMin(new Date()) : (fills.length ? +fills[fills.length - 1].hm.slice(0, 2) * 60 + +fills[fills.length - 1].hm.slice(2) : 0);
+  const recent = fills.filter(f => f.s !== 'O' && (+f.hm.slice(0, 2) * 60 + +f.hm.slice(2)) >= ref - 180);
+  const shown = recent.filter(f => !sel.value || f.c.split(' ')[0] === sel.value).slice().reverse();
   const dayDate = src ? new Date(src.at).toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }) : '';
   const todayDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' });
-  $('dayInfo').textContent = fills.length ? `${fills.filter(f => f.s !== 'O').length} fills${snap.cut ? ' (latest)' : ''}${dayDate !== todayDate ? ' · from ' + dayDate : ''}` : '';
+  $('dayInfo').textContent = fills.length ? `last 3 hours · ${recent.length} of ${fills.filter(f => f.s !== 'O').length} fills${dayDate !== todayDate ? ' · ' + dayDate : ''}` : '';
   $('day').innerHTML = shown.length ? shown.map(f => fillRow(f, true)).join('')
-    : `<li class="empty">${fills.length ? 'No trades for this symbol' : 'Waiting for the first update from the monitor'}</li>`;
+    : `<li class="empty">${fills.length ? 'No trades in the last 3 hours. Tap a position above for its full day.' : 'Waiting for the first update from the monitor'}</li>`;
   if (sheetC) drawSheet();
 
   // ---- Monitor log: outages, recoveries, trades caught up after an outage ----
