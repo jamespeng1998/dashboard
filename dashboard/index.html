@@ -41,6 +41,12 @@ h2 small{font:400 13px Inter,sans-serif;color:var(--mute)}
 .card{border:1px solid transparent;text-align:left;font:inherit;color:inherit;width:100%;margin:0;cursor:pointer;min-height:44px}
 .card:hover{border-color:var(--line)}.card:active{transform:scale(.99)}
 .pos .more{font-size:13px;color:var(--mute);margin-top:2px}
+.pos .pl{font-weight:600;font-variant-numeric:tabular-nums}
+.grp{margin-bottom:14px}.grp .chips{margin-top:8px}
+.tot{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:-2px 0 10px}
+.tot b{font:700 26px/1.1 "Inter Tight",sans-serif;font-variant-numeric:tabular-nums}
+.tot span{font-size:13px;color:var(--mute)}
+.chip b{font-weight:600}
 .pos .name{font-weight:600}
 .pos .sub{font-size:13px;color:var(--mute)}
 .pos .n{font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px}
@@ -104,10 +110,10 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
   <main id="main" hidden>
     <div class="lamp" id="lamp" role="status" aria-live="polite"><b id="lampBig">…</b><span id="lampSub">Connecting</span></div>
 
-    <h2>Open positions <small id="posAge"></small></h2>
-    <div class="pos" id="pos"><div class="empty">No position data yet</div></div>
+    <h2>Positions <small id="posAge"></small></h2>
+    <div id="pos"><div class="empty">No position data yet</div></div>
+    <p class="legend" id="plNote" hidden>P/L is an estimate: T3 doesn't publish fill prices, so each trade is priced at the market price when it happened (options from approximate quotes). Positions held from yesterday start from yesterday's close.</p>
     <p class="legend"><b>Long</b> = he bought it and owns it. <b>Short</b> = he sold it without owning it first (for example, sold calls to collect the premium), which profits if the price falls or stays below the strike. One option contract controls 100 shares.</p>
-    <div id="closedWrap" hidden><h3 class="h3">Closed today</h3><div class="chips" id="closed"></div></div>
 
     <h2>Today's trades <small id="dayInfo"></small></h2>
     <label class="filter"><span class="vh">Filter by symbol</span><select id="symFilter"><option value="">All symbols</option></select></label>
@@ -195,31 +201,83 @@ function alertUser(d) {
   } catch (_) {}
 }
 
-// ---- fill log helpers ----
+// ---- fill log + P/L helpers ----
 const SIDE = { B: 'BUY', S: 'SELL', X: 'SHORT', C: 'COVER', O: 'HELD' };
 const VERB = { B: 'Bought', S: 'Sold', X: 'Sold short', C: 'Bought to cover' };
-let lastFills = [], lastOpen = [], sheetC = '';
-const parseFills = (str) => str.split(';').map(x => x.split('|')).filter(a => a.length === 5)
-  .map(([hm, c, s, q, n]) => ({ hm, c, s, q: +q, n: +n }))
-  .sort((x, y) => x.hm.localeCompare(y.hm));   // stable: same-minute fills keep feed order
+let snap = { positions: [], fills: [], tot: null, at: 0, hasPnl: false }, sheetC = '';
 const hm12 = (hm) => { const h = +hm.slice(0, 2), m = hm.slice(2); return `${((h + 11) % 12) + 1}:${m} ${h < 12 ? 'AM' : 'PM'}`; };
+const byTime = (x, y) => x.hm.localeCompare(y.hm);   // stable: same-minute fills keep feed order
+const usd = (x, sign) => { if (x == null || !isFinite(x)) return '—'; const a = Math.abs(x);
+  const t = '$' + a.toLocaleString('en-US', { minimumFractionDigits: a < 100 && a % 1 ? 2 : 0, maximumFractionDigits: a < 100 ? 2 : 0 });
+  return sign ? (x > 0 ? '+' : x < 0 ? '−' : '') + t : t; };
+const pxFmt = (x) => (x == null || !isFinite(x) ? '' : '$' + Number(x).toFixed(2));
+const plCls = (x) => (x > 0 ? 'long' : x < 0 ? 'short' : '');
+
+// Normalise both feed formats (v3 with P/L, and the older one) into one snapshot
+function snapshotOf(e) {
+  if (e.v === 3 && Array.isArray(e.pos)) {
+    const cs = e.cs || [];
+    const positions = e.pos.map(([ci, n, avg, mark, r, u]) => ({ c: cs[ci], n, avg, mark, r, u })).filter(p => p.c);
+    const fills = (e.day || '').split(';').map(x => x.split('|')).filter(a => a.length >= 5)
+      .map(([hm, ci, s, q, n, px]) => ({ hm, c: cs[+ci], s, q: +q, n: +n, px: px ? +px : null })).filter(f => f.c).sort(byTime);
+    return { positions, fills, tot: e.tot || null, at: e.at, hasPnl: !!e.tot, cut: e.dayCut || 0 };
+  }
+  if (Array.isArray(e.positions)) {
+    const fills = typeof e.today === 'string' ? e.today.split(';').map(x => x.split('|')).filter(a => a.length === 5)
+      .map(([hm, c, s, q, n]) => ({ hm, c, s, q: +q, n: +n, px: null })).sort(byTime) : [];
+    return { positions: e.positions.map(p => ({ c: p.c, n: p.n })), fills, tot: null, at: e.at, hasPnl: false, cut: 0 };
+  }
+  return null;
+}
+
 function fillRow(f, showName) {
   const k = contract(f.c);
-  const what = f.s === 'O' ? 'Carried from previous day' : `${VERB[f.s]} ${units(f.q, k.opt)}`;
+  const what = f.s === 'O' ? 'Carried from previous day' : `${VERB[f.s]} ${units(f.q, k.opt)}${f.px ? ' @ ~' + pxFmt(f.px) : ''}`;
   const now = f.n === 0 ? 'now flat' : `now ${f.n < 0 ? 'short ' : ''}${units(f.n, k.opt)}`;
   return `<li><time>${esc(hm12(f.hm))}</time><span class="pill ${esc(SIDE[f.s] || 'sys')}">${esc(SIDE[f.s] || f.s)}</span>` +
     (showName ? `<span class="c">${esc(k.name)}<em>${esc(k.opt ? k.sub.replace('Option · ', '') : 'Stock')}</em></span>` : '<span class="c"></span>') +
     `<span class="qty">${esc(what)}<em>${esc(now)}</em></span></li>`;
 }
 
+function card(p, traded) {
+  const k = contract(p.c), long = p.n > 0, tot = (p.r || 0) + (p.u || 0);
+  const pl = snap.hasPnl && p.r != null
+    ? `<span class="pl ${plCls(tot)}">P/L today ≈ ${esc(usd(tot, true))}</span><span class="sub">avg ${esc(pxFmt(p.avg))} · now ${esc(pxFmt(p.mark))}</span>` : '';
+  return `<button type="button" class="card" data-c="${esc(p.c)}" aria-label="${esc(k.name)}: show today's trades">` +
+    `<span class="name">${esc(k.name)}</span><span class="sub">${esc(k.sub)}</span>` +
+    `<span class="n ${long ? 'long' : 'short'}">${long ? 'Long' : 'Short'} ${esc(units(p.n, k.opt))}` +
+    `${k.opt ? ` <small>(${esc(Math.abs(p.n).toLocaleString())} shares)</small>` : ''}</span>${pl}` +
+    `<span class="more">${traded ? `${traded} trade${traded === 1 ? '' : 's'} today` : 'No trades today'} ›</span></button>`;
+}
+
+function section(kind, label) {
+  const isOpt = kind === 'o';
+  const all = snap.positions.filter(p => contract(p.c).opt === isOpt);
+  const open = all.filter(p => p.n !== 0);
+  const traded = (c) => snap.fills.filter(f => f.c === c && f.s !== 'O').length;
+  const closedSet = new Set(snap.fills.filter(f => f.s !== 'O' && contract(f.c).opt === isOpt).map(f => f.c));
+  open.forEach(p => closedSet.delete(p.c));
+  const closed = [...closedSet].map(c => snap.positions.find(p => p.c === c) || { c, n: 0 });
+  let head = '';
+  if (snap.hasPnl && snap.tot) {
+    const [r, u] = snap.tot[kind] || [0, 0];
+    head = `<div class="tot"><b class="${plCls(r + u)}">${esc(usd(r + u, true))}</b><span>est. P/L today · closed ${esc(usd(r, true))} · open ${esc(usd(u, true))}</span></div>`;
+  }
+  return `<section class="grp"><h3 class="h3">${label} <small>${open.length} open</small></h3>${head}` +
+    `<div class="pos">${open.length ? open.map(p => card(p, traded(p.c))).join('') : '<div class="empty">None open</div>'}</div>` +
+    (closed.length ? `<div class="chips">${closed.map(p => { const t = (p.r || 0) + (p.u || 0);
+      return `<button type="button" class="chip" data-c="${esc(p.c)}">${esc(contract(p.c).name)} · closed${snap.hasPnl && p.r != null ? ` <b class="${plCls(t)}">${esc(usd(t, true))}</b>` : ''} ›</button>`; }).join('')}</div>` : '') +
+    `</section>`;
+}
+
 // ---- per-position sheet ----
 function drawSheet() {
-  const k = contract(sheetC), list = lastFills.filter(f => f.c === sheetC);
+  const k = contract(sheetC), list = snap.fills.filter(f => f.c === sheetC);
   const trades = list.filter(f => f.s !== 'O');
   const sum = (codes) => trades.filter(f => codes.includes(f.s)).reduce((a, f) => a + f.q, 0);
+  const pos = snap.positions.find(p => p.c === sheetC) || {};
   const last = list[list.length - 1];
-  const held = lastOpen.find(p => p.c === sheetC);
-  const nowN = last ? last.n : held ? held.n : 0;
+  const nowN = pos.n != null ? pos.n : last ? last.n : 0;
   $('sheetTitle').textContent = k.name;
   $('sheetSub').textContent = k.sub;
   const stats = [
@@ -229,7 +287,15 @@ function drawSheet() {
     ['Sold', units(sum(['S', 'X']), k.opt)],
   ];
   if (trades.length) stats.push(['First / last', `${hm12(trades[0].hm)} – ${hm12(trades[trades.length - 1].hm)}`]);
-  $('sheetStats').innerHTML = stats.map(([a, b]) => `<div><span>${esc(a)}</span><b>${esc(b)}</b></div>`).join('');
+  if (snap.hasPnl && pos.r != null) {
+    const t = (pos.r || 0) + (pos.u || 0);
+    stats.unshift(['Est. P/L today', `<span class="${plCls(t)}">${esc(usd(t, true))}</span>`, true]);
+    stats.push(['Closed P/L', `<span class="${plCls(pos.r)}">${esc(usd(pos.r, true))}</span>`, true],
+               ['Open P/L', `<span class="${plCls(pos.u)}">${esc(usd(pos.u, true))}</span>`, true]);
+    if (nowN) stats.push(['Avg cost', pxFmt(pos.avg)]);
+    stats.push(['Last price', pxFmt(pos.mark)]);
+  }
+  $('sheetStats').innerHTML = stats.map(([a, b, html]) => `<div><span>${esc(a)}</span><b>${html ? b : esc(b)}</b></div>`).join('');
   $('sheetList').innerHTML = list.length ? list.map(f => fillRow(f, false)).join('') : '<li class="empty">No trades in this position today</li>';
 }
 function openSheet(c) {
@@ -254,40 +320,23 @@ function render() {
   }
   lamp.className = 'lamp ' + cls; $('lampBig').textContent = big; $('lampSub').textContent = sub;
 
-  // ---- Today's fill log from T3 (same as the room's history) ----
-  const withDay = [...events].reverse().find(e => typeof e.today === 'string' && e.today);
-  const fills = withDay ? parseFills(withDay.today) : [];
-  lastFills = fills;
-  const traded = (c) => fills.filter(f => f.c === c && f.s !== 'O').length;
-
-  const withPos = [...events].reverse().find(e => Array.isArray(e.positions) && !e.test);
-  $('posAge').textContent = withPos ? 'as of ' + tET(withPos.at) + ' ET' : '';
-  const open = withPos ? withPos.positions : [];
-  lastOpen = open;
-  $('pos').innerHTML = open.length
-    ? open.map(p => { const k = contract(p.c), long = p.n > 0, n = traded(p.c);
-        return `<button type="button" class="card" data-c="${esc(p.c)}" aria-label="${esc(k.name)}: show today's trades">` +
-          `<span class="name">${esc(k.name)}</span><span class="sub">${esc(k.sub)}</span>` +
-          `<span class="n ${long ? 'long' : 'short'}">${long ? 'Long' : 'Short'} ${esc(units(p.n, k.opt))}` +
-          `${k.opt ? ` <small>(${esc(Math.abs(p.n).toLocaleString())} shares)</small>` : ''}</span>` +
-          `<span class="more">${n ? `${n} trade${n === 1 ? '' : 's'} today` : 'No trades today'} ›</span></button>`; }).join('')
-    : '<div class="empty">Flat / no data</div>';
-
-  // Positions he traded today but has fully closed
-  const openSet = new Set(open.map(p => p.c));
-  const closed = [...new Set(fills.filter(f => f.s !== 'O').map(f => f.c))].filter(c => !openSet.has(c));
-  $('closedWrap').hidden = !closed.length;
-  $('closed').innerHTML = closed.map(c => `<button type="button" class="chip" data-c="${esc(c)}">${esc(contract(c).name)} · ${traded(c)} ›</button>`).join('');
+  // ---- Latest snapshot from the monitor (positions, fills, P/L) ----
+  const src = [...events].reverse().find(e => !e.test && snapshotOf(e));
+  snap = src ? snapshotOf(src) : { positions: [], fills: [], tot: null, at: 0, hasPnl: false };
+  const fills = snap.fills;
+  $('posAge').textContent = src ? 'as of ' + tET(src.at) + ' ET' : '';
+  $('pos').innerHTML = src ? section('s', 'Stocks') + section('o', 'Options') : '<div class="empty">No position data yet</div>';
+  $('plNote').hidden = !snap.hasPnl;
 
   const syms = [...new Set(fills.map(f => f.c.split(' ')[0]))].sort();
   const sel = $('symFilter'), cur = sel.value;
   sel.innerHTML = '<option value="">All symbols</option>' + syms.map(x => `<option${x === cur ? ' selected' : ''}>${esc(x)}</option>`).join('');
-  const shown = fills.filter(f => !sel.value || f.c.split(' ')[0] === sel.value).reverse();
-  const dayDate = withDay ? new Date(withDay.at).toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }) : '';
+  const shown = fills.filter(f => !sel.value || f.c.split(' ')[0] === sel.value).slice().reverse();
+  const dayDate = src ? new Date(src.at).toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }) : '';
   const todayDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' });
-  $('dayInfo').textContent = withDay ? `${fills.filter(f => f.s !== 'O').length} fills${dayDate !== todayDate ? ' · from ' + dayDate : ''}` : '';
+  $('dayInfo').textContent = fills.length ? `${fills.filter(f => f.s !== 'O').length} fills${snap.cut ? ' (latest)' : ''}${dayDate !== todayDate ? ' · from ' + dayDate : ''}` : '';
   $('day').innerHTML = shown.length ? shown.map(f => fillRow(f, true)).join('')
-    : `<li class="empty">${withDay ? 'No trades for this symbol' : 'Waiting for the first update from the monitor'}</li>`;
+    : `<li class="empty">${fills.length ? 'No trades for this symbol' : 'Waiting for the first update from the monitor'}</li>`;
   if (sheetC) drawSheet();
 
   // ---- Monitor log: outages, recoveries, trades caught up after an outage ----
@@ -338,7 +387,7 @@ $('topic').oninput = () => $('topic').setCustomValidity('');
 $('change').onclick = () => { if (es) es.close(); $('topic').value = topic; topic = ''; start(); };
 $('symFilter').onchange = () => render();
 const pick = (ev) => { const el = ev.target.closest('[data-c]'); if (el) openSheet(el.dataset.c); };
-$('pos').addEventListener('click', pick); $('closed').addEventListener('click', pick);
+$('pos').addEventListener('click', pick);
 $('sheetClose').onclick = closeSheet;
 $('sheet').addEventListener('click', (ev) => { if (ev.target === $('sheet')) closeSheet(); });
 document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && sheetC) closeSheet(); });
