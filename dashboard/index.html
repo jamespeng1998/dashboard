@@ -36,8 +36,13 @@ header{display:flex;justify-content:space-between;align-items:center;gap:8px;mar
 h2{font:600 18px/1.2 "Inter Tight",sans-serif;margin:26px 0 10px;display:flex;justify-content:space-between;align-items:baseline}
 h2 small{font:400 13px Inter,sans-serif;color:var(--mute)}
 .pos{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
-.pos div{background:var(--panel);border-radius:10px;padding:10px 12px;display:flex;justify-content:space-between;gap:8px}
-.pos .n{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pos{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
+.pos>div{background:var(--panel);border-radius:10px;padding:11px 13px;display:grid;gap:2px}
+.pos .name{font-weight:600}
+.pos .sub{font-size:13px;color:var(--mute)}
+.pos .n{font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px}
+.pos .n small{font-weight:400;color:var(--mute);font-size:13px}
+.legend{font-size:13px;color:var(--mute);margin:10px 0 0}
 .long{color:var(--green)}.short{color:var(--red)}
 .tape{list-style:none;margin:0;padding:0;background:var(--panel);border-radius:12px;overflow:hidden}
 .tape li{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 12px;border-top:1px solid var(--line)}
@@ -75,6 +80,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
 
     <h2>Open positions <small id="posAge"></small></h2>
     <div class="pos" id="pos"><div class="empty">No position data yet</div></div>
+    <p class="legend"><b>Long</b> = he bought it and owns it. <b>Short</b> = he sold it without owning it first (for example, sold calls to collect the premium), which profits if the price falls or stays below the strike. One option contract controls 100 shares.</p>
 
     <h2>Trade tape <small>newest first</small></h2>
     <ul class="tape" id="tape"><li class="empty">No trades yet today</li></ul>
@@ -101,6 +107,18 @@ let es = null, soundOn = false, retry = null;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const tET = (ms) => new Date(ms).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
+// "NKE 12/18 40C" -> { name: "NKE $40 Call", sub: "Option · expires Dec 18", opt: true }
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function contract(c) {
+  const m = /^(\S+) (\d{2})\/(\d{2}) ([\d.]+)([CP])$/.exec(String(c || ''));
+  if (!m) return { name: String(c || ''), sub: 'Stock', opt: false };
+  return { name: `${m[1]} $${m[4]} ${m[5] === 'C' ? 'Call' : 'Put'}`, sub: `Option · expires ${MON[+m[2] - 1] || m[2]} ${+m[3]}`, opt: true };
+}
+// Options are reported as shares controlled (contracts x 100)
+const units = (n, opt) => { const a = Math.abs(Number(n) || 0);
+  if (!opt) return `${a.toLocaleString()} share${a === 1 ? '' : 's'}`;
+  const k = a / 100; return `${k.toLocaleString()} contract${k === 1 ? '' : 's'}`; };
+const qtyMove = (from, to, opt) => `${units(from, opt).replace(/ \S+$/, '')} → ${units(to, opt)}`;
 const ago = (ms) => { const s = Math.round((Date.now() - ms) / 1000); return s < 90 ? s + 's ago' : s < 5400 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; };
 
 function inWindowET() {
@@ -152,13 +170,18 @@ function render() {
   const withPos = [...events].reverse().find(e => Array.isArray(e.positions) && !e.test);
   $('posAge').textContent = withPos ? 'as of ' + tET(withPos.at) + ' ET' : '';
   $('pos').innerHTML = withPos && withPos.positions.length
-    ? withPos.positions.map(p => `<div><span>${esc(p.c)}</span><span class="n ${p.n > 0 ? 'long' : 'short'}">${p.n > 0 ? '+' : ''}${esc(p.n)}</span></div>`).join('')
+    ? withPos.positions.map(p => { const k = contract(p.c), long = p.n > 0;
+        return `<div><span class="name">${esc(k.name)}</span><span class="sub">${esc(k.sub)}</span>` +
+          `<span class="n ${long ? 'long' : 'short'}">${long ? 'Long' : 'Short'} ${esc(units(p.n, k.opt))}` +
+          `${k.opt ? ` <small>(${esc(Math.abs(p.n).toLocaleString())} shares)</small>` : ''}</span></div>`; }).join('')
     : '<div class="empty">Flat / no data</div>';
 
   const rows = [];
   for (const e of [...events].reverse()) {
-    if (e.kind === 'trade') rows.push(`<li><time>${tET(e.t ? e.t * 1000 : e.at)}</time><span class="pill ${esc(e.side)}">${esc(e.side)}</span><span class="c">${esc(e.contract)}<em>${esc(e.note)}</em></span><span class="qty">${esc(e.from)} → ${esc(e.to)}</span></li>`);
-    else if (e.kind === 'catchup') for (const c of e.changes || []) rows.push(`<li><time>${tET(c.t ? c.t * 1000 : e.at)}</time><span class="pill MISSED">MISSED</span><span class="c">${esc(c.side)} ${esc(c.contract)}<em>happened while monitor was off</em></span><span class="qty">${esc(c.from)} → ${esc(c.to)}</span></li>`);
+    if (e.kind === 'trade') { const k = contract(e.contract);
+      rows.push(`<li><time>${tET(e.t ? e.t * 1000 : e.at)}</time><span class="pill ${esc(e.side)}">${esc(e.side)}</span><span class="c">${esc(k.name)}<em>${esc(k.opt ? k.sub.replace('Option · ', '') + ' · ' : '')}${esc(e.note)}</em></span><span class="qty">${esc(qtyMove(e.from, e.to, k.opt))}</span></li>`); }
+    else if (e.kind === 'catchup') for (const c of e.changes || []) { const k = contract(c.contract);
+      rows.push(`<li><time>${tET(c.t ? c.t * 1000 : e.at)}</time><span class="pill MISSED">MISSED</span><span class="c">${esc(c.side)} ${esc(k.name)}<em>happened while monitor was off</em></span><span class="qty">${esc(qtyMove(c.from, c.to, k.opt))}</span></li>`); }
     else if (e.kind === 'down') rows.push(`<li><time>${tET(e.at)}</time><span class="pill DOWN">DOWN</span><span class="c">Monitor problem<em>${esc(e.reason)}</em></span><span class="qty"></span></li>`);
     else if (e.kind === 'up') rows.push(`<li><time>${tET(e.at)}</time><span class="pill UP">UP</span><span class="c">Monitor recovered<em>after ~${esc(e.downMin)} min</em></span><span class="qty"></span></li>`);
     if (rows.length >= 200) break;
