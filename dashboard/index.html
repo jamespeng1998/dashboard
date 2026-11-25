@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#16191c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>T3 Trade Watch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* VOICE: control-room terse; IDEA: an exchange status board; PICTURE: one giant status lamp;
+   COLOUR: steel / black / white, alarm red, signal green; TYPE: Inter Tight + Inter; LAYOUT: lamp, positions, tape */
+:root{color-scheme:light dark;
+  --bg:light-dark(#d5dbe0,#16191c);--panel:light-dark(#eef1f3,#1f2327);--ink:light-dark(#0b0d0f,#f2f4f5);
+  --mute:light-dark(#56606a,#9aa4ad);--line:light-dark(#b9c2c9,#2d3237);
+  --red:#e8251a;--green:#12a150;--amber:#d98e04;--grey:#7b858e}
+:root[data-theme=light]{color-scheme:light}:root[data-theme=dark]{color-scheme:dark}
+*{box-sizing:border-box;min-width:0}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Inter,system-ui,sans-serif;overflow-x:clip;
+  padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+.wrap{max-width:760px;margin:0 auto;padding:16px max(4vw,14px) 40px}
+h1{font:700 15px/1 "Inter Tight",sans-serif;margin:0;color:var(--mute)}
+header{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px}
+.feed{font-size:13px;color:var(--mute);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--grey)}
+.lamp{border-radius:14px;padding:22px 20px;color:#fff;background:var(--grey);display:grid;gap:4px;transition:background .3s}
+.lamp.live{background:var(--green)}.lamp.down{background:var(--red)}.lamp.stale{background:var(--amber)}
+.lamp b{font:700 clamp(40px,12vw,64px)/1 "Inter Tight",sans-serif;letter-spacing:-.01em}
+.lamp span{font-size:15px;opacity:.95}
+.lamp.flash{animation:fl .9s ease 2}
+@keyframes fl{50%{filter:brightness(1.35)}}
+@media (prefers-reduced-motion:reduce){.lamp.flash{animation:none}}
+h2{font:600 18px/1.2 "Inter Tight",sans-serif;margin:26px 0 10px;display:flex;justify-content:space-between;align-items:baseline}
+h2 small{font:400 13px Inter,sans-serif;color:var(--mute)}
+.pos{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
+.pos div{background:var(--panel);border-radius:10px;padding:10px 12px;display:flex;justify-content:space-between;gap:8px}
+.pos .n{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.long{color:var(--green)}.short{color:var(--red)}
+.tape{list-style:none;margin:0;padding:0;background:var(--panel);border-radius:12px;overflow:hidden}
+.tape li{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 12px;border-top:1px solid var(--line)}
+.tape li:first-child{border-top:0}
+.tape time{font-size:13px;color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap}
+.pill{font:700 12px "Inter Tight",sans-serif;padding:3px 8px;border-radius:6px;color:#fff;white-space:nowrap}
+.pill.BUY,.pill.COVER{background:var(--green)}.pill.SELL,.pill.SHORT{background:var(--red)}
+.pill.sys{background:var(--grey)}.pill.DOWN{background:var(--red)}.pill.UP{background:var(--green)}.pill.MISSED{background:var(--amber)}
+.c{font-weight:600;overflow-wrap:anywhere}.c em{font-style:normal;font-weight:400;color:var(--mute);font-size:13px;display:block}
+.qty{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;font-size:14px}
+.empty{padding:18px;color:var(--mute);text-align:center}
+.setup{background:var(--panel);border-radius:12px;padding:18px;margin-top:10px}
+.setup label{font-weight:600;display:block;margin-bottom:6px}
+input{width:100%;font-size:16px;padding:11px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+button{min-height:44px;padding:0 16px;font:600 15px Inter,sans-serif;border-radius:8px;border:0;background:var(--ink);color:var(--bg);margin-top:10px;cursor:pointer}
+button.ghost{background:transparent;color:var(--mute);border:1px solid var(--line)}
+button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+.foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}
+.note{font-size:13px;color:var(--mute);margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><h1>T3 TRADE WATCH · REDLER</h1><div class="feed"><i class="dot" id="feedDot"></i><span id="feedTxt">offline</span></div></header>
+
+  <section id="setup" class="setup" hidden>
+    <label for="topic">Your ntfy topic (same as in the extension)</label>
+    <input id="topic" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="james-t3-8f3k2x9q">
+    <button id="saveTopic">Connect</button>
+    <p class="note">Stored only on this device. The dashboard reads the silent “-status” topic, so it doesn't add phone notifications.</p>
+  </section>
+
+  <main id="main" hidden>
+    <div class="lamp" id="lamp" role="status" aria-live="polite"><b id="lampBig">…</b><span id="lampSub">Connecting</span></div>
+
+    <h2>Open positions <small id="posAge"></small></h2>
+    <div class="pos" id="pos"><div class="empty">No position data yet</div></div>
+
+    <h2>Trade tape <small>newest first</small></h2>
+    <ul class="tape" id="tape"><li class="empty">No trades yet today</li></ul>
+
+    <div class="foot">
+      <button class="ghost" id="sound">Enable sound + vibrate</button>
+      <button class="ghost" id="change">Change topic</button>
+      <button class="ghost" id="clear">Clear tape</button>
+    </div>
+    <p class="note">The status is LIVE only while the monitor's heartbeat keeps arriving. If it goes quiet longer than expected, this turns STALE. The separate healthchecks.io alarm notifies you even if you don't have this page open.</p>
+  </main>
+</div>
+
+<script>
+{
+const $ = (id) => document.getElementById(id);
+const store = { get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (_) { return d; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} } };
+const STALE_MS = 13 * 60 * 1000;            // heartbeat is every 10 min by default
+let topic = store.get('t3.topic', '');
+let events = store.get('t3.events', []);    // [{id, at, kind, ...}]
+let lastId = store.get('t3.lastId', '');
+let es = null, soundOn = false, retry = null;
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const tET = (ms) => new Date(ms).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' });
+const ago = (ms) => { const s = Math.round((Date.now() - ms) / 1000); return s < 90 ? s + 's ago' : s < 5400 ? Math.round(s / 60) + 'm ago' : Math.round(s / 3600) + 'h ago'; };
+
+function inWindowET() {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false })
+    .formatToParts(new Date()).map(x => [x.type, x.value]));
+  const m = (Number(p.hour) % 24) * 60 + Number(p.minute);
+  return !['Sat', 'Sun'].includes(p.weekday) && m >= 420 && m <= 1020;
+}
+
+function ingest(raw, live) {
+  if (!raw || raw.event !== 'message' || !raw.message) return;
+  if (events.some(e => e.id === raw.id)) return;
+  let d; try { d = JSON.parse(raw.message); } catch (_) { return; }
+  d.id = raw.id; d.at = d.at || raw.time * 1000;
+  events.push(d); lastId = raw.id;
+  events = events.filter(e => Date.now() - e.at < 3 * 86400000).slice(-600);
+  store.set('t3.events', events); store.set('t3.lastId', lastId);
+  if (live && (d.kind === 'trade' || d.kind === 'down' || d.kind === 'catchup')) alertUser(d);
+}
+
+function alertUser(d) {
+  $('lamp').classList.remove('flash'); void $('lamp').offsetWidth; $('lamp').classList.add('flash');
+  if (!soundOn) return;
+  try { navigator.vibrate && navigator.vibrate(d.kind === 'down' ? [400, 150, 400] : [200]); } catch (_) {}
+  try {
+    const ctx = alertUser.ctx || (alertUser.ctx = new AudioContext());
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = d.kind === 'down' ? 330 : (/BUY|COVER/.test(d.side) ? 880 : 520);
+    g.gain.setValueAtTime(0.25, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+    o.connect(g).connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.5);
+  } catch (_) {}
+}
+
+function render() {
+  const sys = events.filter(e => ['hb', 'up', 'down', 'trade', 'catchup'].includes(e.kind));
+  const last = sys[sys.length - 1];
+  const lastState = [...sys].reverse().find(e => e.kind === 'down' || e.kind === 'up' || e.kind === 'hb' || e.kind === 'trade');
+  const lamp = $('lamp');
+  let cls = '', big = 'NO DATA', sub = 'Waiting for the monitor’s first heartbeat';
+  if (last) {
+    const quiet = Date.now() - last.at;
+    if (lastState && lastState.kind === 'down') { cls = 'down'; big = 'DOWN'; sub = `${lastState.reason || 'Monitor reported a problem'} · since ${tET(lastState.at)} ET`; }
+    else if (!inWindowET()) { big = 'OFF HOURS'; sub = `Last heard ${ago(last.at)}`; }
+    else if (quiet > STALE_MS) { cls = 'stale'; big = 'STALE'; sub = `Monitor silent for ${ago(last.at).replace(' ago', '')}. Check your computer`; }
+    else { cls = 'live'; big = 'LIVE'; sub = `Last heartbeat ${ago(last.at)} · watching Redler’s positions`; }
+  }
+  lamp.className = 'lamp ' + cls; $('lampBig').textContent = big; $('lampSub').textContent = sub;
+
+  const withPos = [...events].reverse().find(e => Array.isArray(e.positions) && !e.test);
+  $('posAge').textContent = withPos ? 'as of ' + tET(withPos.at) + ' ET' : '';
+  $('pos').innerHTML = withPos && withPos.positions.length
+    ? withPos.positions.map(p => `<div><span>${esc(p.c)}</span><span class="n ${p.n > 0 ? 'long' : 'short'}">${p.n > 0 ? '+' : ''}${esc(p.n)}</span></div>`).join('')
+    : '<div class="empty">Flat / no data</div>';
+
+  const rows = [];
+  for (const e of [...events].reverse()) {
+    if (e.kind === 'trade') rows.push(`<li><time>${tET(e.t ? e.t * 1000 : e.at)}</time><span class="pill ${esc(e.side)}">${esc(e.side)}</span><span class="c">${esc(e.contract)}<em>${esc(e.note)}</em></span><span class="qty">${esc(e.from)} → ${esc(e.to)}</span></li>`);
+    else if (e.kind === 'catchup') for (const c of e.changes || []) rows.push(`<li><time>${tET(c.t ? c.t * 1000 : e.at)}</time><span class="pill MISSED">MISSED</span><span class="c">${esc(c.side)} ${esc(c.contract)}<em>happened while monitor was off</em></span><span class="qty">${esc(c.from)} → ${esc(c.to)}</span></li>`);
+    else if (e.kind === 'down') rows.push(`<li><time>${tET(e.at)}</time><span class="pill DOWN">DOWN</span><span class="c">Monitor problem<em>${esc(e.reason)}</em></span><span class="qty"></span></li>`);
+    else if (e.kind === 'up') rows.push(`<li><time>${tET(e.at)}</time><span class="pill UP">UP</span><span class="c">Monitor recovered<em>after ~${esc(e.downMin)} min</em></span><span class="qty"></span></li>`);
+    if (rows.length >= 200) break;
+  }
+  $('tape').innerHTML = rows.length ? rows.join('') : '<li class="empty">No trades yet</li>';
+}
+
+function feedState(ok, txt) { $('feedDot').style.background = ok ? 'var(--green)' : 'var(--red)'; $('feedTxt').textContent = txt; }
+
+async function catchUp() {
+  const since = lastId || '12h';
+  try {
+    const r = await fetch(`https://ntfy.sh/${encodeURIComponent(topic + '-status')}/json?poll=1&since=${encodeURIComponent(since)}`);
+    const txt = await r.text();
+    txt.split('\n').filter(Boolean).forEach(l => { try { ingest(JSON.parse(l), false); } catch (_) {} });
+    render();
+  } catch (_) { feedState(false, 'cannot reach ntfy'); }
+}
+
+function connect() {
+  if (es) es.close();
+  clearTimeout(retry);
+  es = new EventSource(`https://ntfy.sh/${encodeURIComponent(topic + '-status')}/sse?since=${encodeURIComponent(lastId || 'all')}`);
+  es.onopen = () => feedState(true, 'dashboard connected');
+  es.onmessage = (m) => { try { ingest(JSON.parse(m.data), true); render(); } catch (_) {} };
+  es.onerror = () => { feedState(false, 'reconnecting…'); es.close(); retry = setTimeout(async () => { await catchUp(); connect(); }, 3000); };
+}
+
+function start() {
+  $('setup').hidden = !!topic; $('main').hidden = !topic;
+  if (!topic) return;
+  render(); catchUp().then(connect);
+}
+
+$('saveTopic').onclick = () => {
+  const v = $('topic').value.trim();
+  if (!/^[A-Za-z0-9_-]{6,64}$/.test(v)) { $('topic').setCustomValidity('Use 6–64 letters, numbers, - or _'); $('topic').reportValidity(); return; }
+  topic = v; store.set('t3.topic', v); events = []; lastId = ''; store.set('t3.events', []); store.set('t3.lastId', ''); start();
+};
+$('topic').oninput = () => $('topic').setCustomValidity('');
+$('change').onclick = () => { if (es) es.close(); $('topic').value = topic; topic = ''; start(); };
+$('clear').onclick = () => { events = events.filter(e => e.kind === 'hb').slice(-1); store.set('t3.events', events); render(); };
+$('sound').onclick = () => { soundOn = true; try { (alertUser.ctx = alertUser.ctx || new AudioContext()).resume(); } catch (_) {} $('sound').textContent = 'Sound on'; };
+document.addEventListener('visibilitychange', () => { if (!document.hidden && topic) { catchUp(); if (!es || es.readyState === 2) connect(); } });
+setInterval(render, 15000);
+start();
+}
+</script>
+</body>
+</html>
