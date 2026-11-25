@@ -53,6 +53,12 @@ h2 small{font:400 13px Inter,sans-serif;color:var(--mute)}
 .pill.sys{background:var(--grey)}.pill.DOWN{background:var(--red)}.pill.UP{background:var(--green)}.pill.MISSED{background:var(--amber)}
 .c{font-weight:600;overflow-wrap:anywhere}.c em{font-style:normal;font-weight:400;color:var(--mute);font-size:13px;display:block}
 .qty{font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right;font-size:14px}
+.qty em{font-style:normal;display:block;color:var(--mute);font-size:13px}
+.pill.HELD{background:var(--grey)}
+.filter{display:block;margin:-2px 0 10px}
+.filter select{font:16px Inter,sans-serif;min-height:44px;padding:0 12px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);width:100%;max-width:260px}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+@media(max-width:420px){.tape li{grid-template-columns:auto minmax(0,1fr) auto}.tape li time{grid-column:1/-1}}
 .empty{padding:18px;color:var(--mute);text-align:center}
 .setup{background:var(--panel);border-radius:12px;padding:18px;margin-top:10px}
 .setup label{font-weight:600;display:block;margin-bottom:6px}
@@ -82,8 +88,12 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
     <div class="pos" id="pos"><div class="empty">No position data yet</div></div>
     <p class="legend"><b>Long</b> = he bought it and owns it. <b>Short</b> = he sold it without owning it first (for example, sold calls to collect the premium), which profits if the price falls or stays below the strike. One option contract controls 100 shares.</p>
 
-    <h2>Trade tape <small>newest first</small></h2>
-    <ul class="tape" id="tape"><li class="empty">No trades yet today</li></ul>
+    <h2>Today's trades <small id="dayInfo"></small></h2>
+    <label class="filter"><span class="vh">Filter by symbol</span><select id="symFilter"><option value="">All symbols</option></select></label>
+    <ul class="tape" id="day"><li class="empty">Waiting for the first update from the monitor</li></ul>
+
+    <h2>Monitor log <small>newest first</small></h2>
+    <ul class="tape" id="tape"><li class="empty">No outages</li></ul>
 
     <div class="foot">
       <button class="ghost" id="sound">Enable sound + vibrate</button>
@@ -176,17 +186,39 @@ function render() {
           `${k.opt ? ` <small>(${esc(Math.abs(p.n).toLocaleString())} shares)</small>` : ''}</span></div>`; }).join('')
     : '<div class="empty">Flat / no data</div>';
 
+  // ---- Today's trades: the full fill log from T3 (same as the room's history) ----
+  const withDay = [...events].reverse().find(e => typeof e.today === 'string' && e.today);
+  const SIDE = { B: 'BUY', S: 'SELL', X: 'SHORT', C: 'COVER', O: 'HELD' };
+  const VERB = { B: 'Bought', S: 'Sold', X: 'Sold short', C: 'Bought to cover' };
+  let fills = [];
+  if (withDay) fills = withDay.today.split(';').map(x => x.split('|')).filter(a => a.length === 5)
+    .map(([hm, c, s, q, n]) => ({ hm, c, s, q: +q, n: +n }));
+  const syms = [...new Set(fills.map(f => f.c.split(' ')[0]))].sort();
+  const sel = $('symFilter'), cur = sel.value;
+  sel.innerHTML = '<option value="">All symbols</option>' + syms.map(s => `<option${s === cur ? ' selected' : ''}>${esc(s)}</option>`).join('');
+  const shown = fills.filter(f => !sel.value || f.c.split(' ')[0] === sel.value).reverse();
+  const hm12 = (hm) => { const h = +hm.slice(0, 2), m = hm.slice(2); return `${((h + 11) % 12) + 1}:${m} ${h < 12 ? 'AM' : 'PM'}`; };
+  const dayDate = withDay ? new Date(withDay.at).toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }) : '';
+  const todayDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' });
+  $('dayInfo').textContent = withDay ? `${fills.filter(f => f.s !== 'O').length} fills${dayDate !== todayDate ? ' · from ' + dayDate : ''}` : '';
+  $('day').innerHTML = shown.length ? shown.map(f => { const k = contract(f.c);
+    const what = f.s === 'O' ? 'Carried from previous day' : `${VERB[f.s]} ${units(f.q, k.opt)}`;
+    const now = f.n === 0 ? 'now flat' : `now ${f.n < 0 ? 'short ' : ''}${units(f.n, k.opt)}`;
+    return `<li><time>${esc(hm12(f.hm))}</time><span class="pill ${esc(SIDE[f.s] || 'sys')}">${esc(SIDE[f.s] || f.s)}</span>` +
+      `<span class="c">${esc(k.name)}<em>${esc(k.opt ? k.sub.replace('Option · ', '') : 'Stock')}</em></span>` +
+      `<span class="qty">${esc(what)}<em>${esc(now)}</em></span></li>`; }).join('')
+    : `<li class="empty">${withDay ? 'No trades for this symbol' : 'Waiting for the first update from the monitor'}</li>`;
+
+  // ---- Monitor log: outages, recoveries, trades caught up after an outage ----
   const rows = [];
   for (const e of [...events].reverse()) {
-    if (e.kind === 'trade') { const k = contract(e.contract);
-      rows.push(`<li><time>${tET(e.t ? e.t * 1000 : e.at)}</time><span class="pill ${esc(e.side)}">${esc(e.side)}</span><span class="c">${esc(k.name)}<em>${esc(k.opt ? k.sub.replace('Option · ', '') + ' · ' : '')}${esc(e.note)}</em></span><span class="qty">${esc(qtyMove(e.from, e.to, k.opt))}</span></li>`); }
-    else if (e.kind === 'catchup') for (const c of e.changes || []) { const k = contract(c.contract);
+    if (e.kind === 'catchup') for (const c of e.changes || []) { const k = contract(c.contract);
       rows.push(`<li><time>${tET(c.t ? c.t * 1000 : e.at)}</time><span class="pill MISSED">MISSED</span><span class="c">${esc(c.side)} ${esc(k.name)}<em>happened while monitor was off</em></span><span class="qty">${esc(qtyMove(c.from, c.to, k.opt))}</span></li>`); }
     else if (e.kind === 'down') rows.push(`<li><time>${tET(e.at)}</time><span class="pill DOWN">DOWN</span><span class="c">Monitor problem<em>${esc(e.reason)}</em></span><span class="qty"></span></li>`);
     else if (e.kind === 'up') rows.push(`<li><time>${tET(e.at)}</time><span class="pill UP">UP</span><span class="c">Monitor recovered<em>after ~${esc(e.downMin)} min</em></span><span class="qty"></span></li>`);
     if (rows.length >= 200) break;
   }
-  $('tape').innerHTML = rows.length ? rows.join('') : '<li class="empty">No trades yet</li>';
+  $('tape').innerHTML = rows.length ? rows.join('') : '<li class="empty">No outages</li>';
 }
 
 function feedState(ok, txt) { $('feedDot').style.background = ok ? 'var(--green)' : 'var(--red)'; $('feedTxt').textContent = txt; }
