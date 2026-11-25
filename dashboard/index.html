@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#16191c">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>T3 Trade Watch</title>
+<meta name="apple-mobile-web-app-title" content="Watchlist">
+<meta name="robots" content="noindex, nofollow">
+<title>Watchlist</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -59,11 +61,11 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
 </head>
 <body>
 <div class="wrap">
-  <header><h1>T3 TRADE WATCH · REDLER</h1><div class="feed"><i class="dot" id="feedDot"></i><span id="feedTxt">offline</span></div></header>
+  <header><h1>WATCHLIST</h1><div class="feed"><i class="dot" id="feedDot"></i><span id="feedTxt">offline</span></div></header>
 
   <section id="setup" class="setup" hidden>
     <label for="topic">Your ntfy topic (same as in the extension)</label>
-    <input id="topic" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="james-t3-8f3k2x9q">
+    <input id="topic" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="e.g. a long random name">
     <button id="saveTopic">Connect</button>
     <p class="note">Stored only on this device. The dashboard reads the silent “-status” topic, so it doesn't add phone notifications.</p>
   </section>
@@ -143,7 +145,7 @@ function render() {
     if (lastState && lastState.kind === 'down') { cls = 'down'; big = 'DOWN'; sub = `${lastState.reason || 'Monitor reported a problem'} · since ${tET(lastState.at)} ET`; }
     else if (!inWindowET()) { big = 'OFF HOURS'; sub = `Last heard ${ago(last.at)}`; }
     else if (quiet > STALE_MS) { cls = 'stale'; big = 'STALE'; sub = `Monitor silent for ${ago(last.at).replace(' ago', '')}. Check your computer`; }
-    else { cls = 'live'; big = 'LIVE'; sub = `Last heartbeat ${ago(last.at)} · watching Redler’s positions`; }
+    else { cls = 'live'; big = 'LIVE'; sub = `Last heartbeat ${ago(last.at)} · monitoring positions`; }
   }
   lamp.className = 'lamp ' + cls; $('lampBig').textContent = big; $('lampSub').textContent = sub;
 
