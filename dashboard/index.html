@@ -96,6 +96,26 @@ button{min-height:44px;padding:0 16px;font:600 15px Inter,sans-serif;border-radi
 button.ghost{background:transparent;color:var(--mute);border:1px solid var(--line)}
 button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
 .foot{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}
+.tabs{display:grid;grid-template-columns:1fr 1fr;background:var(--panel);border-radius:12px;padding:4px;gap:4px;margin-bottom:14px}
+.tabs button,.seg button{margin:0;min-height:44px;border-radius:9px;background:transparent;color:var(--mute);font:600 15px Inter,sans-serif}
+.tabs button[aria-selected=true]{background:var(--ink);color:var(--bg)}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:14px}
+.seg button[aria-pressed=true]{background:var(--panel);color:var(--ink)}
+.plHead{background:var(--panel);border-radius:14px;padding:16px 18px;display:grid;gap:4px}
+.plHead>span{color:var(--mute);font-size:14px}
+.plHead>b{font:700 clamp(36px,10vw,52px)/1.05 "Inter Tight",sans-serif;font-variant-numeric:tabular-nums}
+.split{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px}
+.split div{display:grid}.split span{font-size:13px;color:var(--mute)}.split b{font-variant-numeric:tabular-nums;font-size:17px}
+.chart{display:flex;align-items:stretch;gap:3px;height:150px;padding:6px 0;margin-bottom:12px;border-bottom:1px solid var(--line)}
+.chart .col{flex:1 1 0;display:grid;grid-template-rows:1fr 1fr auto;min-width:0}
+.chart .up,.chart .dn{display:flex;justify-content:center}.chart .up{align-items:flex-end}.chart .dn{align-items:flex-start;border-top:1px solid var(--line)}
+.chart i{display:block;width:min(100%,22px);border-radius:3px}
+.chart .up i{background:var(--green)}.chart .dn i{background:var(--red)}
+.chart small{font-size:10px;color:var(--mute);text-align:center;white-space:nowrap;overflow:hidden;padding-top:3px}
+.chart.flat .dn{display:none}.chart.flat{grid-template-rows:1fr auto}
+#plTable li{grid-template-columns:minmax(0,1fr) auto auto}
+#plTable .sum{font-weight:700;font-variant-numeric:tabular-nums;text-align:right;min-width:78px}
+#plTable .parts{font-size:13px;color:var(--mute);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .note{font-size:13px;color:var(--mute);margin-top:8px}
 </style>
 </head>
@@ -111,6 +131,11 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
   </section>
 
   <main id="main" hidden>
+    <nav class="tabs" role="tablist" aria-label="Views">
+      <button type="button" role="tab" id="tabLive" aria-controls="viewLive" aria-selected="true">Live</button>
+      <button type="button" role="tab" id="tabPl" aria-controls="viewPl" aria-selected="false">P/L</button>
+    </nav>
+    <div id="viewLive" role="tabpanel" aria-labelledby="tabLive">
     <div class="lamp" id="lamp" role="status" aria-live="polite"><b id="lampBig">…</b><span id="lampSub">Connecting</span></div>
 
     <h2>Positions <small id="posAge"></small></h2>
@@ -125,6 +150,26 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
 
     <h2>Monitor log <small>newest first</small></h2>
     <ul class="tape" id="tape"><li class="empty">No outages</li></ul>
+    </div>
+
+    <div id="viewPl" role="tabpanel" aria-labelledby="tabPl" hidden>
+      <div class="seg" role="group" aria-label="Period">
+        <button type="button" data-p="d" aria-pressed="true">Day</button><button type="button" data-p="m" aria-pressed="false">Month</button><button type="button" data-p="y" aria-pressed="false">Year</button>
+      </div>
+      <div class="plHead">
+        <span id="plLabel">Today</span>
+        <b id="plBig">—</b>
+        <div class="split">
+          <div><span>Stocks</span><b id="plS">—</b></div>
+          <div><span>Options</span><b id="plO">—</b></div>
+          <div><span>Sales</span><b id="plN">—</b></div>
+        </div>
+      </div>
+      <h2 id="chartTitle">Last 30 days</h2>
+      <div class="chart" id="plChart" aria-hidden="true"></div>
+      <ul class="tape" id="plTable"><li class="empty">No history yet</li></ul>
+      <p class="legend">Realized P/L only (what he sold), estimated from market prices. Options still held when they expire count at their final price on expiry day. History starts the day P/L was set up<span id="plSince"></span>.</p>
+    </div>
 
     <div class="foot">
       <button class="ghost" id="sound">Enable sound + vibrate</button>
@@ -154,6 +199,8 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
                 set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} } };
 const STALE_MS = 13 * 60 * 1000;            // heartbeat is every 10 min by default
 let topic = store.get('t3.topic', '');
+let hist = store.get('t3.hist', { d: {}, m: {}, y: {}, since: '' });   // realized P/L history, kept on this phone
+let tab = store.get('t3.tab', 'live'), period = store.get('t3.period', 'd');
 let events = store.get('t3.events', []);    // [{id, at, kind, ...}]
 let lastId = store.get('t3.lastId', '');
 let es = null, soundOn = false, retry = null;
@@ -186,6 +233,7 @@ function ingest(raw, live) {
   if (events.some(e => e.id === raw.id)) return;
   let d; try { d = JSON.parse(raw.message); } catch (_) { return; }
   d.id = raw.id; d.at = d.at || raw.time * 1000;
+  if (d.kind === 'hist') { mergeHist(d); lastId = raw.id; store.set('t3.lastId', lastId); return; }
   events.push(d); lastId = raw.id;
   events = events.filter(e => Date.now() - e.at < 3 * 86400000).slice(-600);
   store.set('t3.events', events); store.set('t3.lastId', lastId);
@@ -306,6 +354,66 @@ function openSheet(c) {
 }
 function closeSheet() { sheetC = ''; $('sheet').hidden = true; document.body.classList.remove('locked'); }
 
+// ---------- P/L tab ----------
+function mergeHist(m) {
+  for (const k of ['d', 'm', 'y']) (m[k] || '').split(';').filter(Boolean).forEach(x => {
+    const [key, s, o, n] = x.split(','); if (key) hist[k][key] = [+s || 0, +o || 0, +n || 0]; });
+  if (m.since) hist.since = m.since;
+  store.set('t3.hist', hist);
+}
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const etKey = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date()).replace(/-/g, '');
+function periodLabel(p, k, short) {
+  if (p === 'y') return k;
+  if (p === 'm') return short ? MONTHS[+k.slice(4, 6) - 1] : `${MONTHS[+k.slice(4, 6) - 1]} ${k.slice(0, 4)}`;
+  const d = new Date(Date.UTC(+k.slice(0, 4), +k.slice(4, 6) - 1, +k.slice(6, 8), 12));
+  return short ? String(+k.slice(6, 8)) : d.toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' });
+}
+function plData() {
+  // Today's figure comes live from the latest snapshot; the stored history may be up to an hour old.
+  const today = etKey(), d = { ...hist.d }, m = { ...hist.m }, y = { ...hist.y };
+  const sameDay = snap.at && new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York' }).format(new Date(snap.at)).replace(/-/g, '') === today;
+  if (snap.hasPnl && snap.tot && sameDay) {
+    const live = [snap.tot.s[0] || 0, snap.tot.o[0] || 0, snap.fills.filter(f => f.rp != null).length];
+    const old = d[today] || [0, 0, 0], delta = live.map((v, i) => v - old[i]);
+    d[today] = live;
+    const bump = (map, key) => { const a = map[key] || [0, 0, 0]; map[key] = a.map((v, i) => v + delta[i]); };
+    bump(m, today.slice(0, 6)); bump(y, today.slice(0, 4));
+  }
+  return { d, m, y, today };
+}
+function renderPl() {
+  const data = plData(), map = data[period];
+  const cur = period === 'd' ? data.today : period === 'm' ? data.today.slice(0, 6) : data.today.slice(0, 4);
+  const v = map[cur] || [0, 0, 0], tot = v[0] + v[1];
+  $('plLabel').textContent = period === 'd' ? 'Today · realized' : period === 'm' ? `${periodLabel('m', cur)} · realized` : `${cur} · realized`;
+  $('plBig').textContent = usd(tot, true); $('plBig').className = plCls(tot);
+  $('plS').textContent = usd(v[0], true); $('plS').className = plCls(v[0]);
+  $('plO').textContent = usd(v[1], true); $('plO').className = plCls(v[1]);
+  $('plN').textContent = String(v[2] || 0);
+  const keys = Object.keys(map).sort();
+  const span = period === 'd' ? keys.slice(-30) : period === 'm' ? keys.slice(-12) : keys;
+  $('chartTitle').textContent = period === 'd' ? `Last ${span.length || 30} trading days` : period === 'm' ? 'Last 12 months' : 'By year';
+  const vals = span.map(k => (map[k][0] || 0) + (map[k][1] || 0)), max = Math.max(1, ...vals.map(Math.abs));
+  const hasNeg = vals.some(x => x < 0), ch = $('plChart');
+  ch.className = 'chart' + (hasNeg ? '' : ' flat');
+  ch.innerHTML = span.length ? span.map((k, i) => { const x = vals[i], h = Math.max(2, Math.round(Math.abs(x) / max * 100));
+    return `<div class="col" title="${esc(periodLabel(period, k))}: ${esc(usd(x, true))}"><div class="up">${x > 0 ? `<i style="height:${h}%"></i>` : ''}</div>` +
+      `<div class="dn">${x < 0 ? `<i style="height:${h}%"></i>` : ''}</div><small>${esc(periodLabel(period, k, true))}</small></div>`; }).join('')
+    : '';
+  $('plTable').innerHTML = keys.length ? keys.slice().reverse().map(k => { const a = map[k], t = (a[0] || 0) + (a[1] || 0);
+    return `<li><span class="c">${esc(periodLabel(period, k))}<em>${esc(String(a[2] || 0))} sale${a[2] === 1 ? '' : 's'}</em></span>` +
+      `<span class="parts">Stocks ${esc(usd(a[0], true))}<br>Options ${esc(usd(a[1], true))}</span><span class="sum ${plCls(t)}">${esc(usd(t, true))}</span></li>`; }).join('')
+    : `<li class="empty">${snap.hasPnl ? 'History builds up from today. Check back after the close.' : 'P/L is off. Add Alpaca keys in the extension Settings.'}</li>`;
+  $('plSince').textContent = hist.since ? ` (${new Date(hist.since + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' })})` : '';
+}
+function showTab(t) {
+  tab = t; store.set('t3.tab', t);
+  $('tabLive').setAttribute('aria-selected', String(t === 'live')); $('tabPl').setAttribute('aria-selected', String(t === 'pl'));
+  $('viewLive').hidden = t !== 'live'; $('viewPl').hidden = t !== 'pl';
+  if (t === 'pl') renderPl();
+}
+
 function render() {
   const sys = events.filter(e => ['hb', 'up', 'down', 'trade', 'catchup'].includes(e.kind));
   const last = sys[sys.length - 1];
@@ -348,6 +456,7 @@ function render() {
   $('day').innerHTML = shown.length ? shown.map(f => fillRow(f, true)).join('')
     : `<li class="empty">${fills.length ? 'No trades in the last 3 hours. Tap a position above for its full day.' : 'Waiting for the first update from the monitor'}</li>`;
   if (sheetC) drawSheet();
+  if (tab === 'pl') renderPl();
 
   // ---- Monitor log: outages, recoveries, trades caught up after an outage ----
   const rows = [];
@@ -391,11 +500,17 @@ function start() {
 $('saveTopic').onclick = () => {
   const v = $('topic').value.trim();
   if (!/^[A-Za-z0-9_-]{6,64}$/.test(v)) { $('topic').setCustomValidity('Use 6–64 letters, numbers, - or _'); $('topic').reportValidity(); return; }
-  topic = v; store.set('t3.topic', v); events = []; lastId = ''; store.set('t3.events', []); store.set('t3.lastId', ''); start();
+  topic = v; store.set('t3.topic', v); events = []; lastId = ''; hist = { d: {}, m: {}, y: {}, since: '' }; store.set('t3.hist', hist); store.set('t3.events', []); store.set('t3.lastId', ''); start();
 };
 $('topic').oninput = () => $('topic').setCustomValidity('');
 $('change').onclick = () => { if (es) es.close(); $('topic').value = topic; topic = ''; start(); };
 $('symFilter').onchange = () => render();
+$('tabLive').onclick = () => showTab('live'); $('tabPl').onclick = () => showTab('pl');
+document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
+  period = b.dataset.p; store.set('t3.period', period);
+  document.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', String(x === b))); renderPl(); });
+document.querySelectorAll('.seg button').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.p === period)));
+showTab(tab);
 const pick = (ev) => { const el = ev.target.closest('[data-c]'); if (el) openSheet(el.dataset.c); };
 $('pos').addEventListener('click', pick);
 $('sheetClose').onclick = closeSheet;
