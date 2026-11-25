@@ -37,12 +37,32 @@ h2{font:600 18px/1.2 "Inter Tight",sans-serif;margin:26px 0 10px;display:flex;ju
 h2 small{font:400 13px Inter,sans-serif;color:var(--mute)}
 .pos{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}
 .pos{grid-template-columns:repeat(auto-fill,minmax(230px,1fr))}
-.pos>div{background:var(--panel);border-radius:10px;padding:11px 13px;display:grid;gap:2px}
+.pos>div,.pos>.card{background:var(--panel);border-radius:10px;padding:11px 13px;display:grid;gap:2px}
+.card{border:1px solid transparent;text-align:left;font:inherit;color:inherit;width:100%;margin:0;cursor:pointer;min-height:44px}
+.card:hover{border-color:var(--line)}.card:active{transform:scale(.99)}
+.pos .more{font-size:13px;color:var(--mute);margin-top:2px}
 .pos .name{font-weight:600}
 .pos .sub{font-size:13px;color:var(--mute)}
 .pos .n{font-weight:600;font-variant-numeric:tabular-nums;margin-top:4px}
 .pos .n small{font-weight:400;color:var(--mute);font-size:13px}
 .legend{font-size:13px;color:var(--mute);margin:10px 0 0}
+.h3{font:600 15px/1.2 "Inter Tight",sans-serif;margin:18px 0 8px;display:flex;justify-content:space-between;align-items:baseline}
+.h3 small{font:400 13px Inter,sans-serif;color:var(--mute)}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{min-height:40px;margin:0;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:500 14px Inter,sans-serif;cursor:pointer}
+.sheet{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-end;justify-content:center;z-index:10}
+.sheet[hidden]{display:none}
+.sheet .panel{background:var(--bg);width:100%;max-width:760px;max-height:88vh;overflow-y:auto;border-radius:16px 16px 0 0;padding:18px max(4vw,14px) calc(24px + env(safe-area-inset-bottom))}
+.sheetHead{display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.sheetHead h2{margin:0;font-size:22px}.sheetHead p{margin:2px 0 0;color:var(--mute);font-size:14px}
+.close{margin-top:0}
+.stats{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:14px}
+.stats div{background:var(--panel);border-radius:10px;padding:9px 12px;display:grid}
+.stats span{font-size:13px;color:var(--mute)}.stats b{font-variant-numeric:tabular-nums}
+#sheetList li{grid-template-columns:auto auto minmax(0,1fr) auto}
+body.locked{overflow:hidden}
+@media (prefers-reduced-motion:no-preference){.sheet:not([hidden]) .panel{animation:up .18s ease-out}}
+@keyframes up{from{transform:translateY(24px);opacity:.6}}
 .long{color:var(--green)}.short{color:var(--red)}
 .tape{list-style:none;margin:0;padding:0;background:var(--panel);border-radius:12px;overflow:hidden}
 .tape li{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:11px 12px;border-top:1px solid var(--line)}
@@ -87,6 +107,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
     <h2>Open positions <small id="posAge"></small></h2>
     <div class="pos" id="pos"><div class="empty">No position data yet</div></div>
     <p class="legend"><b>Long</b> = he bought it and owns it. <b>Short</b> = he sold it without owning it first (for example, sold calls to collect the premium), which profits if the price falls or stays below the strike. One option contract controls 100 shares.</p>
+    <div id="closedWrap" hidden><h3 class="h3">Closed today</h3><div class="chips" id="closed"></div></div>
 
     <h2>Today's trades <small id="dayInfo"></small></h2>
     <label class="filter"><span class="vh">Filter by symbol</span><select id="symFilter"><option value="">All symbols</option></select></label>
@@ -102,6 +123,18 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
     </div>
     <p class="note">The status is LIVE only while the monitor's heartbeat keeps arriving. If it goes quiet longer than expected, this turns STALE. The separate healthchecks.io alarm notifies you even if you don't have this page open.</p>
   </main>
+</div>
+
+<div class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="panel">
+    <div class="sheetHead">
+      <div><h2 id="sheetTitle">—</h2><p id="sheetSub"></p></div>
+      <button type="button" class="ghost close" id="sheetClose" aria-label="Close">Close</button>
+    </div>
+    <div class="stats" id="sheetStats"></div>
+    <h3 class="h3">Trades today <small>oldest first</small></h3>
+    <ul class="tape" id="sheetList"></ul>
+  </div>
 </div>
 
 <script>
@@ -162,6 +195,50 @@ function alertUser(d) {
   } catch (_) {}
 }
 
+// ---- fill log helpers ----
+const SIDE = { B: 'BUY', S: 'SELL', X: 'SHORT', C: 'COVER', O: 'HELD' };
+const VERB = { B: 'Bought', S: 'Sold', X: 'Sold short', C: 'Bought to cover' };
+let lastFills = [], lastOpen = [], sheetC = '';
+const parseFills = (str) => str.split(';').map(x => x.split('|')).filter(a => a.length === 5)
+  .map(([hm, c, s, q, n]) => ({ hm, c, s, q: +q, n: +n }))
+  .sort((x, y) => x.hm.localeCompare(y.hm));   // stable: same-minute fills keep feed order
+const hm12 = (hm) => { const h = +hm.slice(0, 2), m = hm.slice(2); return `${((h + 11) % 12) + 1}:${m} ${h < 12 ? 'AM' : 'PM'}`; };
+function fillRow(f, showName) {
+  const k = contract(f.c);
+  const what = f.s === 'O' ? 'Carried from previous day' : `${VERB[f.s]} ${units(f.q, k.opt)}`;
+  const now = f.n === 0 ? 'now flat' : `now ${f.n < 0 ? 'short ' : ''}${units(f.n, k.opt)}`;
+  return `<li><time>${esc(hm12(f.hm))}</time><span class="pill ${esc(SIDE[f.s] || 'sys')}">${esc(SIDE[f.s] || f.s)}</span>` +
+    (showName ? `<span class="c">${esc(k.name)}<em>${esc(k.opt ? k.sub.replace('Option · ', '') : 'Stock')}</em></span>` : '<span class="c"></span>') +
+    `<span class="qty">${esc(what)}<em>${esc(now)}</em></span></li>`;
+}
+
+// ---- per-position sheet ----
+function drawSheet() {
+  const k = contract(sheetC), list = lastFills.filter(f => f.c === sheetC);
+  const trades = list.filter(f => f.s !== 'O');
+  const sum = (codes) => trades.filter(f => codes.includes(f.s)).reduce((a, f) => a + f.q, 0);
+  const last = list[list.length - 1];
+  const held = lastOpen.find(p => p.c === sheetC);
+  const nowN = last ? last.n : held ? held.n : 0;
+  $('sheetTitle').textContent = k.name;
+  $('sheetSub').textContent = k.sub;
+  const stats = [
+    ['Now', nowN === 0 ? 'Flat' : `${nowN < 0 ? 'Short' : 'Long'} ${units(nowN, k.opt)}`],
+    ['Trades today', String(trades.length)],
+    ['Bought', units(sum(['B', 'C']), k.opt)],
+    ['Sold', units(sum(['S', 'X']), k.opt)],
+  ];
+  if (trades.length) stats.push(['First / last', `${hm12(trades[0].hm)} – ${hm12(trades[trades.length - 1].hm)}`]);
+  $('sheetStats').innerHTML = stats.map(([a, b]) => `<div><span>${esc(a)}</span><b>${esc(b)}</b></div>`).join('');
+  $('sheetList').innerHTML = list.length ? list.map(f => fillRow(f, false)).join('') : '<li class="empty">No trades in this position today</li>';
+}
+function openSheet(c) {
+  sheetC = c; drawSheet();
+  $('sheet').hidden = false; document.body.classList.add('locked');
+  $('sheetClose').focus();
+}
+function closeSheet() { sheetC = ''; $('sheet').hidden = true; document.body.classList.remove('locked'); }
+
 function render() {
   const sys = events.filter(e => ['hb', 'up', 'down', 'trade', 'catchup'].includes(e.kind));
   const last = sys[sys.length - 1];
@@ -177,37 +254,41 @@ function render() {
   }
   lamp.className = 'lamp ' + cls; $('lampBig').textContent = big; $('lampSub').textContent = sub;
 
+  // ---- Today's fill log from T3 (same as the room's history) ----
+  const withDay = [...events].reverse().find(e => typeof e.today === 'string' && e.today);
+  const fills = withDay ? parseFills(withDay.today) : [];
+  lastFills = fills;
+  const traded = (c) => fills.filter(f => f.c === c && f.s !== 'O').length;
+
   const withPos = [...events].reverse().find(e => Array.isArray(e.positions) && !e.test);
   $('posAge').textContent = withPos ? 'as of ' + tET(withPos.at) + ' ET' : '';
-  $('pos').innerHTML = withPos && withPos.positions.length
-    ? withPos.positions.map(p => { const k = contract(p.c), long = p.n > 0;
-        return `<div><span class="name">${esc(k.name)}</span><span class="sub">${esc(k.sub)}</span>` +
+  const open = withPos ? withPos.positions : [];
+  lastOpen = open;
+  $('pos').innerHTML = open.length
+    ? open.map(p => { const k = contract(p.c), long = p.n > 0, n = traded(p.c);
+        return `<button type="button" class="card" data-c="${esc(p.c)}" aria-label="${esc(k.name)}: show today's trades">` +
+          `<span class="name">${esc(k.name)}</span><span class="sub">${esc(k.sub)}</span>` +
           `<span class="n ${long ? 'long' : 'short'}">${long ? 'Long' : 'Short'} ${esc(units(p.n, k.opt))}` +
-          `${k.opt ? ` <small>(${esc(Math.abs(p.n).toLocaleString())} shares)</small>` : ''}</span></div>`; }).join('')
+          `${k.opt ? ` <small>(${esc(Math.abs(p.n).toLocaleString())} shares)</small>` : ''}</span>` +
+          `<span class="more">${n ? `${n} trade${n === 1 ? '' : 's'} today` : 'No trades today'} ›</span></button>`; }).join('')
     : '<div class="empty">Flat / no data</div>';
 
-  // ---- Today's trades: the full fill log from T3 (same as the room's history) ----
-  const withDay = [...events].reverse().find(e => typeof e.today === 'string' && e.today);
-  const SIDE = { B: 'BUY', S: 'SELL', X: 'SHORT', C: 'COVER', O: 'HELD' };
-  const VERB = { B: 'Bought', S: 'Sold', X: 'Sold short', C: 'Bought to cover' };
-  let fills = [];
-  if (withDay) fills = withDay.today.split(';').map(x => x.split('|')).filter(a => a.length === 5)
-    .map(([hm, c, s, q, n]) => ({ hm, c, s, q: +q, n: +n }));
+  // Positions he traded today but has fully closed
+  const openSet = new Set(open.map(p => p.c));
+  const closed = [...new Set(fills.filter(f => f.s !== 'O').map(f => f.c))].filter(c => !openSet.has(c));
+  $('closedWrap').hidden = !closed.length;
+  $('closed').innerHTML = closed.map(c => `<button type="button" class="chip" data-c="${esc(c)}">${esc(contract(c).name)} · ${traded(c)} ›</button>`).join('');
+
   const syms = [...new Set(fills.map(f => f.c.split(' ')[0]))].sort();
   const sel = $('symFilter'), cur = sel.value;
-  sel.innerHTML = '<option value="">All symbols</option>' + syms.map(s => `<option${s === cur ? ' selected' : ''}>${esc(s)}</option>`).join('');
+  sel.innerHTML = '<option value="">All symbols</option>' + syms.map(x => `<option${x === cur ? ' selected' : ''}>${esc(x)}</option>`).join('');
   const shown = fills.filter(f => !sel.value || f.c.split(' ')[0] === sel.value).reverse();
-  const hm12 = (hm) => { const h = +hm.slice(0, 2), m = hm.slice(2); return `${((h + 11) % 12) + 1}:${m} ${h < 12 ? 'AM' : 'PM'}`; };
   const dayDate = withDay ? new Date(withDay.at).toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }) : '';
   const todayDate = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' });
   $('dayInfo').textContent = withDay ? `${fills.filter(f => f.s !== 'O').length} fills${dayDate !== todayDate ? ' · from ' + dayDate : ''}` : '';
-  $('day').innerHTML = shown.length ? shown.map(f => { const k = contract(f.c);
-    const what = f.s === 'O' ? 'Carried from previous day' : `${VERB[f.s]} ${units(f.q, k.opt)}`;
-    const now = f.n === 0 ? 'now flat' : `now ${f.n < 0 ? 'short ' : ''}${units(f.n, k.opt)}`;
-    return `<li><time>${esc(hm12(f.hm))}</time><span class="pill ${esc(SIDE[f.s] || 'sys')}">${esc(SIDE[f.s] || f.s)}</span>` +
-      `<span class="c">${esc(k.name)}<em>${esc(k.opt ? k.sub.replace('Option · ', '') : 'Stock')}</em></span>` +
-      `<span class="qty">${esc(what)}<em>${esc(now)}</em></span></li>`; }).join('')
+  $('day').innerHTML = shown.length ? shown.map(f => fillRow(f, true)).join('')
     : `<li class="empty">${withDay ? 'No trades for this symbol' : 'Waiting for the first update from the monitor'}</li>`;
+  if (sheetC) drawSheet();
 
   // ---- Monitor log: outages, recoveries, trades caught up after an outage ----
   const rows = [];
@@ -255,6 +336,12 @@ $('saveTopic').onclick = () => {
 };
 $('topic').oninput = () => $('topic').setCustomValidity('');
 $('change').onclick = () => { if (es) es.close(); $('topic').value = topic; topic = ''; start(); };
+$('symFilter').onchange = () => render();
+const pick = (ev) => { const el = ev.target.closest('[data-c]'); if (el) openSheet(el.dataset.c); };
+$('pos').addEventListener('click', pick); $('closed').addEventListener('click', pick);
+$('sheetClose').onclick = closeSheet;
+$('sheet').addEventListener('click', (ev) => { if (ev.target === $('sheet')) closeSheet(); });
+document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && sheetC) closeSheet(); });
 $('clear').onclick = () => { events = events.filter(e => e.kind === 'hb').slice(-1); store.set('t3.events', events); render(); };
 $('sound').onclick = () => { soundOn = true; try { (alertUser.ctx = alertUser.ctx || new AudioContext()).resume(); } catch (_) {} $('sound').textContent = 'Sound on'; };
 document.addEventListener('visibilitychange', () => { if (!document.hidden && topic) { catchUp(); if (!es || es.readyState === 2) connect(); } });
