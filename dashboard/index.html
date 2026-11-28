@@ -47,6 +47,23 @@ h2 small{font:400 13px Inter,sans-serif;color:var(--mute)}
 .tot b{font:700 26px/1.1 "Inter Tight",sans-serif;font-variant-numeric:tabular-nums}
 .tot span{font-size:13px;color:var(--mute)}
 .warn{color:var(--amber);font-weight:600}
+.copier{background:var(--panel);border-radius:12px;padding:12px 14px;margin:14px 0 0;display:grid;gap:8px}
+.cpHead{display:flex;align-items:center;gap:10px}.cpHead b{font:600 16px "Inter Tight",sans-serif}
+.cpHead span{flex:1;font-size:13px;color:var(--mute)}
+button.sm{min-height:36px;margin:0;padding:0 12px;font-size:14px}
+.cpReq{border:2px solid var(--amber);border-radius:10px;padding:10px 12px;display:grid;gap:6px}
+.cpReq p{margin:0;font-size:14px}.cpReq .row{display:flex;gap:8px}.cpReq .row button{margin:0;flex:1}
+.cpReq .ok{background:var(--green);color:#fff}
+.cpList{list-style:none;margin:0;padding:0;font-size:14px}.cpList li{display:flex;justify-content:space-between;gap:8px;padding:4px 0;border-top:1px solid var(--line)}
+.cpList li:first-child{border-top:0}.cpList .m{color:var(--mute);white-space:nowrap}
+.lat{background:var(--panel);border-radius:12px;padding:12px 14px}
+.latHead{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:6px}
+.latHead span{font-size:14px;color:var(--mute)}.latHead b{font:700 22px "Inter Tight",sans-serif;font-variant-numeric:tabular-nums}
+.lat table{width:100%;border-collapse:collapse;font-size:14px}
+.lat th{text-align:right;font-weight:500;color:var(--mute);font-size:13px;padding:4px 0}.lat th:first-child{text-align:left}
+.lat td{padding:5px 0;border-top:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.lat td:first-child{text-align:left;white-space:normal;padding-right:8px}
+.lat tr.tot td{font-weight:700}
 .qty em.long,.qty em.short{font-weight:600}
 .qty em.long{color:var(--green)}.qty em.short{color:var(--red)}
 .chip b{font-weight:600}
@@ -138,6 +155,13 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
     <div id="viewLive" role="tabpanel" aria-labelledby="tabLive">
     <div class="lamp" id="lamp" role="status" aria-live="polite"><b id="lampBig">…</b><span id="lampSub">Connecting</span></div>
 
+    <section class="copier" id="copierBox" hidden>
+      <div class="cpHead"><b>Copier</b><span id="cpState"></span>
+        <button type="button" class="ghost sm" id="cpToggle">Pause</button></div>
+      <div id="cpPending"></div>
+      <div id="cpBody"></div>
+    </section>
+
     <h2>Positions <small id="posAge"></small></h2>
     <div id="pos"><div class="empty">No position data yet</div></div>
     <p class="legend warn" id="plWhy" hidden></p>
@@ -147,6 +171,9 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
     <h2>Recent trades <small id="dayInfo"></small></h2>
     <label class="filter"><span class="vh">Filter by symbol</span><select id="symFilter"><option value="">All symbols</option></select></label>
     <ul class="tape" id="day"><li class="empty">Waiting for the first update from the monitor</li></ul>
+
+    <h2>Alert speed <small id="latInfo"></small></h2>
+    <div class="lat" id="lat"><div class="empty">Shows after his next trade</div></div>
 
     <h2>Monitor log <small>newest first</small></h2>
     <ul class="tape" id="tape"><li class="empty">No outages</li></ul>
@@ -175,6 +202,7 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-
       <button class="ghost" id="sound">Enable sound + vibrate</button>
       <button class="ghost" id="change">Change topic</button>
       <button class="ghost" id="clear">Clear tape</button>
+      <button class="ghost" id="cpLink">Copier code</button>
     </div>
     <p class="note">The status is LIVE only while the monitor's heartbeat keeps arriving. If it goes quiet longer than expected, this turns STALE. The separate healthchecks.io alarm notifies you even if you don't have this page open.</p>
   </main>
@@ -238,6 +266,7 @@ function ingest(raw, live) {
   events = events.filter(e => Date.now() - e.at < 3 * 86400000).slice(-600);
   store.set('t3.events', events); store.set('t3.lastId', lastId);
   if (live && (d.kind === 'trade' || d.kind === 'down' || d.kind === 'catchup')) alertUser(d);
+  if (live && d.kind === 'trade') { d.rx = Date.now(); store.set('t3.events', events); }   // when this page received it
 }
 
 function alertUser(d) {
@@ -354,6 +383,53 @@ function openSheet(c) {
 }
 function closeSheet() { sheetC = ''; $('sheet').hidden = true; document.body.classList.remove('locked'); }
 
+// ---------- Copier (Webull) ----------
+let cpCode = store.get('t3.cpcode', '');
+const cpSent = new Set();   // requests already answered from this page
+async function cpSend(text) {
+  if (!cpCode) { $('cpState').textContent = 'Set the copier code first'; return false; }
+  try { const r = await fetch(`https://ntfy.sh/${encodeURIComponent(cpCode)}`, { method: 'POST', body: text }); return r.ok; }
+  catch (_) { $('cpState').textContent = 'Could not reach ntfy'; return false; }
+}
+function renderCopier() {
+  const c = [...events].reverse().find(e => e.kind === 'copier');
+  $('copierBox').hidden = !c && !cpCode;
+  if (!c) { $('cpState').textContent = cpCode ? 'Waiting for copier.py to report…' : ''; $('cpBody').innerHTML = ''; $('cpPending').innerHTML = ''; return; }
+  const age = Date.now() - c.at, stale = age > 11 * 60000;
+  $('cpState').textContent = `${c.state === 'paused' ? 'Paused' : 'Running'} · ${c.env}${stale ? ` · last report ${ago(c.at)}` : ''}`;
+  $('cpToggle').textContent = c.state === 'paused' ? 'Resume' : 'Pause';
+  const nowS = Date.now() / 1000;
+  $('cpPending').innerHTML = (c.pend || []).filter(p => p.x > nowS && !cpSent.has(p.id)).map(p =>
+    `<div class="cpReq"><p><b>Waiting for you</b> · ${Math.max(0, Math.round(p.x - nowS))}s left</p><p>${esc(p.l)}</p>` +
+    `<div class="row"><button type="button" class="ok" data-cmd="approve:${esc(p.id)}:${esc(p.n)}">Approve</button>` +
+    `<button type="button" class="ghost" data-cmd="skip:${esc(p.id)}:${esc(p.n)}">Skip</button></div></div>`).join('');
+  const d = c.day || {};
+  $('cpBody').innerHTML = `<ul class="cpList">${(c.open || []).map(o => `<li><span>${esc(o.l)}</span><span class="m">${o.k === 'spread' ? 'credit' : 'paid'} ${esc(pxFmt(o.e))} · max loss ${esc(usd(o.m))}</span></li>`).join('') || '<li><span>No open copies</span></li>'}</ul>` +
+    `<p class="note">Today: ${d.opened || 0} opened · ${d.closed || 0} closed · ${d.skipped || 0} not copied · realized <b class="${plCls(d.realized)}">${esc(usd(d.realized || 0, true))}</b> · open risk ${esc(usd(c.risk || 0))}</p>`;
+}
+
+// ---------- Alert speed (latency) ----------
+const sec = (ms) => (ms == null || !isFinite(ms) ? '—' : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`);
+const median = (a) => { const v = a.filter(x => x != null && isFinite(x)).sort((x, y) => x - y); return v.length ? v[Math.floor(v.length / 2)] : null; };
+function renderLatency() {
+  const todayStr = new Date().toLocaleDateString('en-US', { timeZone: 'America/New_York' });
+  const trades = events.filter(e => e.kind === 'trade' && Array.isArray(e.lat) &&
+    new Date(e.at).toLocaleDateString('en-US', { timeZone: 'America/New_York' }) === todayStr);
+  if (!trades.length) { $('lat').innerHTML = '<div class="empty">Shows after his next trade</div>'; $('latInfo').textContent = ''; return; }
+  const parts = (e) => { const [a, b, c, d] = e.lat; const page = e.rx ? e.rx - e.at : null;
+    return { t3: a, det: b, send: c, ntfy: d, page, total: [a, b, c, d, page].reduce((s, x) => s + (x > 0 ? x : 0), 0) }; };
+  const last = trades[trades.length - 1], L = parts(last), all = trades.map(parts);
+  const k = contract(last.contract);
+  const steps = [['T3 records his fill → monitor notices', 't3'], ['Monitor reads his new position', 'det'],
+                 ['Alert built and sent', 'send'], ['ntfy accepts it', 'ntfy'], ['Reaches this page', 'page']];
+  $('latInfo').textContent = `${trades.length} trade${trades.length === 1 ? '' : 's'} today`;
+  $('lat').innerHTML = `<div class="latHead"><span>Last: ${esc(last.side)} ${esc(k.name)} · ${esc(tET(last.at))}</span><b>${esc(sec(L.total))}</b></div>` +
+    `<table><thead><tr><th>Step</th><th>Last</th><th>Median today</th></tr></thead><tbody>` +
+    steps.map(([label, key]) => `<tr><td>${esc(label)}</td><td>${esc(sec(L[key]))}</td><td>${esc(sec(median(all.map(x => x[key]))))}</td></tr>`).join('') +
+    `<tr class="tot"><td>Total</td><td>${esc(sec(L.total))}</td><td>${esc(sec(median(all.map(x => x.total))))}</td></tr></tbody></table>` +
+    `<p class="note">The first step uses T3's clock and your computer's, so a few seconds of clock difference can show up there. "Reaches this page" only counts trades that arrived while this page was open.</p>`;
+}
+
 // ---------- P/L tab ----------
 function mergeHist(m) {
   for (const k of ['d', 'm', 'y']) (m[k] || '').split(';').filter(Boolean).forEach(x => {
@@ -457,6 +533,8 @@ function render() {
     : `<li class="empty">${fills.length ? 'No trades in the last 3 hours. Tap a position above for its full day.' : 'Waiting for the first update from the monitor'}</li>`;
   if (sheetC) drawSheet();
   if (tab === 'pl') renderPl();
+  renderLatency();
+  renderCopier();
 
   // ---- Monitor log: outages, recoveries, trades caught up after an outage ----
   const rows = [];
@@ -505,6 +583,13 @@ $('saveTopic').onclick = () => {
 $('topic').oninput = () => $('topic').setCustomValidity('');
 $('change').onclick = () => { if (es) es.close(); $('topic').value = topic; topic = ''; start(); };
 $('symFilter').onchange = () => render();
+$('cpPending').addEventListener('click', async (ev) => { const b = ev.target.closest('[data-cmd]'); if (!b) return;
+  b.disabled = true; if (await cpSend(b.dataset.cmd)) cpSent.add(b.dataset.cmd.split(':')[1]), b.closest('.cpReq').innerHTML = `<p>Sent: ${b.dataset.cmd.startsWith('approve') ? 'Approve' : 'Skip'}</p>`; });
+$('cpToggle').onclick = async () => { const pausing = $('cpToggle').textContent === 'Pause'; if (await cpSend(pausing ? 'pause' : 'resume')) $('cpState').textContent = pausing ? 'Pausing…' : 'Resuming…'; };
+$('cpLink').onclick = () => { $('copierBox').hidden = false;
+  const box = $('cpBody'); box.innerHTML = `<label for="cpIn">Copier code (printed by copier.py)</label><input id="cpIn" autocomplete="off" spellcheck="false" value="${esc(cpCode)}"><button type="button" id="cpSave">Save</button>`;
+  $('cpSave').onclick = () => { cpCode = $('cpIn').value.trim(); store.set('t3.cpcode', cpCode); render(); }; };
+setInterval(() => { if ($('cpPending').innerHTML) renderCopier(); }, 1000);
 $('tabLive').onclick = () => showTab('live'); $('tabPl').onclick = () => showTab('pl');
 document.querySelectorAll('.seg button').forEach(b => b.onclick = () => {
   period = b.dataset.p; store.set('t3.period', period);
